@@ -172,6 +172,31 @@ describe('Layer 1: repeated resize at index 0', () => {
   }
 })
 
+// ─── Inline getItemKey: render storm with fresh closure each call ────────────
+// Simulates the idiomatic React usage `getItemKey: (i) => data[i].id` where
+// the closure identity changes on every render. Each iteration is one "render":
+// setOptions (fresh closure) → getMeasurements (what getVirtualItems triggers).
+
+describe('Inline getItemKey: render storm with fresh closure', () => {
+  const baseOpts = {
+    getScrollElement: () => null,
+    scrollToFn: () => {},
+    observeElementRect: () => {},
+    observeElementOffset: () => {},
+    estimateSize: () => 30,
+  }
+  for (const n of [1000, 10000, 100000]) {
+    bench(`n=${n}, 200 renders w/ inline getItemKey`, () => {
+      const v = new Virtualizer({ ...baseOpts, count: n })
+      ;(v as any).getMeasurements()
+      for (let r = 0; r < 200; r++) {
+        v.setOptions({ ...baseOpts, count: n, getItemKey: (i: number) => i })
+        ;(v as any).getMeasurements()
+      }
+    })
+  }
+})
+
 // ─── Layer 2: setOptions per render ──────────────────────────────────────────
 
 describe('Layer 2: setOptions() — simulating React render storm', () => {
