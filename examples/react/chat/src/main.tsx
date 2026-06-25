@@ -51,7 +51,7 @@ function App() {
     followOnAppend: true,
     scrollEndThreshold: 80,
     overscan: 6,
-    directDomUpdates: true,
+    directDomUpdates: false,
   })
 
   const virtualItems = virtualizer.getVirtualItems()
