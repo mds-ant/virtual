@@ -1379,6 +1379,129 @@ test('lazy fast path: 1M-item list returns a sparse view, not an eagerly-allocat
   expect(m[999_999]!.end).toBe(30_000_000)
 })
 
+test('lazy fast path: slice() of a sparse view returns a dense copy', () => {
+  // `Array.prototype.slice` (like `map`, `filter`, `forEach`, `indexOf`, …)
+  // probes HasProperty per index before reading. Without a `has` trap the
+  // probe consults the holey backing target, so unmaterialized indexes copy
+  // as holes: the copy keeps `length` but its elements read as `undefined`,
+  // and a later hole-visiting consumer (`findIndex`, `find`) crashes on them.
+  const v = new Virtualizer({
+    count: 100,
+    estimateSize: () => 30,
+    getItemKey: (i) => `item-${i}`,
+    getScrollElement: () => null,
+    scrollToFn: vi.fn(),
+    observeElementRect: vi.fn(),
+    observeElementOffset: vi.fn(),
+  })
+  const m = v['getMeasurements']()
+  // Materialize a single mid-list item; everything else stays lazy.
+  expect(m[50]!.index).toBe(50)
+
+  const copy = m.slice()
+  expect(copy.length).toBe(100)
+  for (let i = 0; i < copy.length; i++) {
+    expect(copy[i]).toBeDefined()
+  }
+  expect(copy.findIndex((item) => item.key === 'item-0')).toBe(0)
+})
+
+test('lazy fast path: HasProperty and key enumeration see a dense array', () => {
+  const v = new Virtualizer({
+    count: 10,
+    estimateSize: () => 30,
+    getScrollElement: () => null,
+    scrollToFn: vi.fn(),
+    observeElementRect: vi.fn(),
+    observeElementOffset: vi.fn(),
+  })
+  const m = v['getMeasurements']()
+  expect(0 in m).toBe(true)
+  expect(9 in m).toBe(true)
+  expect(10 in m).toBe(false)
+  expect('length' in m).toBe(true)
+  expect(Object.keys(m).length).toBe(10)
+  expect(Reflect.ownKeys(m)).toContain('length')
+  expect(m.filter(Boolean).length).toBe(10)
+  expect(m.map((item) => item.index)).toEqual([...Array(10).keys()])
+  const spread = { ...m }
+  expect(Object.keys(spread).length).toBe(10)
+  expect(spread[9]!.index).toBe(9)
+})
+
+test('lazy fast path: `in` does not materialize items', () => {
+  // The `has` trap must answer from the index range alone — materializing
+  // on a HasProperty probe would defeat the lazy allocation this view
+  // exists for.
+  const getItemKey = vi.fn((i: number) => i)
+  const v = new Virtualizer({
+    count: 100,
+    estimateSize: () => 30,
+    getItemKey,
+    getScrollElement: () => null,
+    scrollToFn: vi.fn(),
+    observeElementRect: vi.fn(),
+    observeElementOffset: vi.fn(),
+  })
+  const m = v['getMeasurements']()
+  getItemKey.mockClear()
+  expect(50 in m).toBe(true)
+  expect(getItemKey).not.toHaveBeenCalled()
+  expect(m[50]!.key).toBe(50)
+  expect(getItemKey).toHaveBeenCalledTimes(1)
+})
+
+test('lazy fast path: non-canonical index strings are not properties', () => {
+  // A real dense array rejects `"01"`, `"1e1"`, `"0x10"` — only canonical
+  // index strings are own properties. `get`, `has`,
+  // `getOwnPropertyDescriptor`, and `ownKeys` must agree on that, or
+  // `hasOwn`-vs-`Object.keys` reconciliation sees contradictory answers.
+  const v = new Virtualizer({
+    count: 100,
+    estimateSize: () => 30,
+    getScrollElement: () => null,
+    scrollToFn: vi.fn(),
+    observeElementRect: vi.fn(),
+    observeElementOffset: vi.fn(),
+  })
+  const m = v['getMeasurements']()
+  for (const bad of ['01', '00', '1e1', '0x10', '1.0', ' 5', '']) {
+    expect(bad in m).toBe(false)
+    expect((m as any)[bad]).toBeUndefined()
+    expect(Object.getOwnPropertyDescriptor(m, bad)).toBeUndefined()
+  }
+  expect('0' in m).toBe(true)
+  expect('99' in m).toBe(true)
+  expect('100' in m).toBe(false)
+})
+
+test('lazy fast path: Object.freeze works on a partially materialized view', () => {
+  // `preventExtensions` materializes everything first, so freezing pins
+  // real values and the reported descriptors match the frozen target —
+  // without the trap, `SetIntegrityLevel`'s `[[OwnPropertyKeys]]` sees
+  // synthetic keys on a non-extensible target and throws.
+  const v = new Virtualizer({
+    count: 20,
+    estimateSize: () => 30,
+    getScrollElement: () => null,
+    scrollToFn: vi.fn(),
+    observeElementRect: vi.fn(),
+    observeElementOffset: vi.fn(),
+  })
+  const m = v['getMeasurements']()
+  expect(m[3]!.index).toBe(3)
+
+  Object.freeze(m)
+  expect(Object.isFrozen(m)).toBe(true)
+  expect(m.length).toBe(20)
+  expect(m[19]!.end).toBe(600)
+  // findIndex visits holes, so a non-dense copy fails here.
+  expect(m.slice().findIndex((item) => item === undefined)).toBe(-1)
+  const desc = Object.getOwnPropertyDescriptor(m, 7)
+  expect(desc?.configurable).toBe(false)
+  expect(desc?.writable).toBe(false)
+})
+
 // ─── iOS momentum-safe scroll adjustments ───────────────────────────────────
 
 function withFakeIOSUserAgent<T>(fn: () => T): T {
